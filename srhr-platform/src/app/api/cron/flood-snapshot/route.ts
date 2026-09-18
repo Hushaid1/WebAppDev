@@ -6,6 +6,7 @@ import { Resend } from "resend"
 
 const CLIMATE_BACKEND_URL = process.env.CLIMATE_BACKEND_URL || "http://localhost:8002"
 const FLOOD_HIGH_THRESHOLD = 0.5
+const FORECAST_ADVANCE_DAYS = 3
 
 function getResend() {
   const key = process.env.RESEND_API_KEY
@@ -24,46 +25,55 @@ type Prediction = {
   compound_risk_level: string | null
 }
 
-async function sendFloodAlertEmails(highRiskPredictions: Prediction[], date: string) {
-  const resend = getResend()
-  if (!resend || highRiskPredictions.length === 0) return
+type ForecastDay = {
+  date: string
+  day_label: string
+  flood_probability: number
+  risk_level: string
+  rain_mm: number
+  confidence: string
+  is_forecast: boolean
+}
 
-  // Load all partner preferences from platform_settings
+type ForecastResponse = {
+  location: string
+  forecasts: ForecastDay[]
+}
+
+async function getAlertRecipients() {
   const prefRows = await db
     .select({ key: platformSettings.key, value: platformSettings.value })
     .from(platformSettings)
     .where(sql`${platformSettings.key} LIKE 'partner_prefs_%'`)
 
-  // Collect user IDs whose climateAlerts preference is enabled
   const enabledUserIds: string[] = []
   for (const row of prefRows) {
     try {
       const prefs = JSON.parse(row.value) as { climateAlerts?: boolean }
       if (prefs.climateAlerts !== false) {
-        const userId = row.key.replace("partner_prefs_", "")
-        enabledUserIds.push(userId)
+        enabledUserIds.push(row.key.replace("partner_prefs_", ""))
       }
     } catch {
-      // Malformed JSON — treat as no preference, default to enabled
-      const userId = row.key.replace("partner_prefs_", "")
-      enabledUserIds.push(userId)
+      enabledUserIds.push(row.key.replace("partner_prefs_", ""))
     }
   }
 
-  // Also email all partners who have no preference row (default: enabled)
   const allPartners = await db
     .select({ id: users.id, email: users.email, name: users.name })
     .from(users)
     .where(eq(users.role, "partner"))
 
   const configuredIds = new Set(prefRows.map((r) => r.key.replace("partner_prefs_", "")))
-  const recipients = allPartners.filter(
-    (p) => enabledUserIds.includes(p.id) || !configuredIds.has(p.id),
-  )
+  return allPartners.filter((p) => enabledUserIds.includes(p.id) || !configuredIds.has(p.id))
+}
 
+async function sendFloodAlertEmails(highRiskPredictions: Prediction[], date: string) {
+  const resend = getResend()
+  if (!resend || highRiskPredictions.length === 0) return
+
+  const recipients = await getAlertRecipients()
   if (recipients.length === 0) return
 
-  // Idempotency guard: skip if we already sent alerts for this date
   const sentKey = `flood_alert_sent_${date}`
   const [alreadySent] = await db
     .select({ value: platformSettings.value })
@@ -75,7 +85,6 @@ async function sendFloodAlertEmails(highRiskPredictions: Prediction[], date: str
 
   const base = baseUrl()
   const alertsUrl = `${base}/partners/alerts`
-
   const lgaList = highRiskPredictions
     .map((p) => `<li>${p.lga_id} — ${Math.round(p.flood_probability * 100)}% probability (${p.risk_level})</li>`)
     .join("")
@@ -108,10 +117,80 @@ async function sendFloodAlertEmails(highRiskPredictions: Prediction[], date: str
     }
   }
 
-  // Record that alerts were sent today so a second cron fire doesn't duplicate
   await db
     .insert(platformSettings)
     .values({ key: sentKey, value: date })
+    .onConflictDoNothing()
+}
+
+async function sendForecastWarningEmails(
+  alertDays: ForecastDay[],
+  location: string,
+  today: string,
+) {
+  const resend = getResend()
+  if (!resend || alertDays.length === 0) return
+
+  const recipients = await getAlertRecipients()
+  if (recipients.length === 0) return
+
+  // Idempotency: one forecast warning email per day, keyed to today's cron run
+  const sentKey = `flood_forecast_warning_sent_${today}`
+  const [alreadySent] = await db
+    .select({ value: platformSettings.value })
+    .from(platformSettings)
+    .where(eq(platformSettings.key, sentKey))
+    .limit(1)
+
+  if (alreadySent) return
+
+  const base = baseUrl()
+  const alertsUrl = `${base}/partners/alerts`
+
+  const firstAlert = alertDays[0]
+  const isEmergency = alertDays.some((d) => d.risk_level === "emergency")
+  const accentColor = isEmergency ? "#dc2626" : "#d97706"
+  const headerLabel = isEmergency ? "🚨 Critical Flood Risk Forecast" : "⚠️ Elevated Flood Risk Forecast"
+
+  const dayRows = alertDays
+    .map((d) => {
+      const pct = Math.round(d.flood_probability * 100)
+      const rain = d.rain_mm > 0 ? ` · ${d.rain_mm}mm rain expected` : ""
+      return `<li><strong>${d.day_label}</strong> — ${pct}% flood probability (${d.risk_level})${rain}</li>`
+    })
+    .join("")
+
+  for (const recipient of recipients) {
+    try {
+      await resend.emails.send({
+        from: emailFrom(),
+        to: recipient.email,
+        subject: `${isEmergency ? "🚨" : "⚠️"} Flood Warning: Elevated Risk Forecast for ${firstAlert.day_label}`,
+        html: `
+          <div style="font-family: sans-serif; max-width: 520px; margin: 0 auto;">
+            <h2 style="color: ${accentColor};">${headerLabel}</h2>
+            <p>Hi ${recipient.name || "there"},</p>
+            <p>The Hushaid early-warning system is forecasting <strong>elevated flood risk</strong> for <strong>${location}</strong> in the next ${FORECAST_ADVANCE_DAYS} days:</p>
+            <ul style="margin: 12px 0; padding-left: 20px; line-height: 2;">
+              ${dayRows}
+            </ul>
+            <p>This is an <strong>advance warning</strong> based on rainfall forecasts and terrain data. Please prepare precautionary measures and advise at-risk communities before conditions arrive.</p>
+            <a href="${alertsUrl}" style="display: inline-block; background: ${accentColor}; color: #fff; padding: 12px 24px; border-radius: 6px; text-decoration: none; margin-top: 8px;">
+              View Alerts Dashboard
+            </a>
+            <hr style="border: none; border-top: 1px solid #e2e8f0; margin: 24px 0;" />
+            <p style="color: #94a3b8; font-size: 12px;">Hushaid — Early warning alerts for Nigerian communities. Forecast accuracy is highest for days 1–5. To manage notification preferences, visit your dashboard preferences page.</p>
+          </div>
+        `,
+      })
+    } catch (error) {
+      console.error(`Failed to send forecast warning email to ${recipient.email}:`, error)
+    }
+  }
+
+  await db
+    .insert(platformSettings)
+    .values({ key: sentKey, value: today })
     .onConflictDoNothing()
 }
 
@@ -163,16 +242,41 @@ export async function GET(request: Request) {
         },
       })
 
-    // Send email alerts for high-risk predictions (FR-085, FR-132, AC-045)
+    // Send same-day alert for any currently high-risk areas
     const highRisk = predictions.filter(
       (p) => p.risk_level === "high" || p.flood_probability >= FLOOD_HIGH_THRESHOLD,
     )
     await sendFloodAlertEmails(highRisk, today)
 
+    // Fetch 90-day forecast and send advance warning for elevated risk within 72 hours
+    let forecastAlertsSent = 0
+    try {
+      const forecastRes = await fetch(`${CLIMATE_BACKEND_URL}/api/v1/flood-forecast`, {
+        cache: "no-store",
+      })
+      if (forecastRes.ok) {
+        const forecastData: ForecastResponse = await forecastRes.json()
+        // Only act on high-confidence days (days 1–5); slice to FORECAST_ADVANCE_DAYS
+        const nearTermDays = forecastData.forecasts
+          .filter((d) => d.is_forecast && d.confidence === "forecast")
+          .slice(0, FORECAST_ADVANCE_DAYS)
+
+        const alertDays = nearTermDays.filter(
+          (d) => d.risk_level === "warning" || d.risk_level === "emergency",
+        )
+
+        await sendForecastWarningEmails(alertDays, forecastData.location, today)
+        forecastAlertsSent = alertDays.length
+      }
+    } catch (forecastError) {
+      console.error("Flood forecast warning check failed:", forecastError)
+    }
+
     return NextResponse.json({
       saved: predictions.length,
       date: today,
       alertsSent: highRisk.length > 0 ? highRisk.length : 0,
+      forecastAlertsSent,
     })
   } catch (error) {
     console.error("Flood snapshot cron error:", error)

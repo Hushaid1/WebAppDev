@@ -256,9 +256,16 @@ export async function GET(request: Request) {
       })
       if (forecastRes.ok) {
         const forecastData: ForecastResponse = await forecastRes.json()
-        // Only act on high-confidence days (days 1–5); slice to FORECAST_ADVANCE_DAYS
+        // Days 1–5 from the backend have confidence "high" (days 1–2) or "moderate" (days 3–5).
+        // Exclude today (day_label === "Today") so we only warn about future conditions
+        // and avoid duplicating the same-day snapshot alert.
         const nearTermDays = forecastData.forecasts
-          .filter((d) => d.is_forecast && d.confidence === "forecast")
+          .filter(
+            (d) =>
+              d.is_forecast &&
+              (d.confidence === "high" || d.confidence === "moderate") &&
+              d.day_label !== "Today",
+          )
           .slice(0, FORECAST_ADVANCE_DAYS)
 
         const alertDays = nearTermDays.filter(

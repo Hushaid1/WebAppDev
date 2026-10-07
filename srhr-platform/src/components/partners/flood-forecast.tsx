@@ -6,7 +6,6 @@ import { CheckCircle2, AlertTriangle, Waves, CloudRain, Info } from "lucide-reac
 import {
   Tooltip,
   TooltipContent,
-  TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 
@@ -155,22 +154,20 @@ export function FloodForecast() {
             <CardTitle className="text-sm font-medium">
               90-Day Flood Outlook — Karu LGA
             </CardTitle>
-            <TooltipProvider>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
-                </TooltipTrigger>
-                <TooltipContent className="max-w-72 text-xs space-y-1">
-                  <p className="font-medium">How to read this outlook</p>
-                  <p>Each row shows the expected flood situation based on rainfall forecasts and terrain data for Karu LGA.</p>
-                  <p><strong>Safe</strong> — normal conditions, no action needed.</p>
-                  <p><strong>Monitor</strong> — rainfall building, stay alert.</p>
-                  <p><strong>Elevated</strong> — flooding likely, prepare response.</p>
-                  <p><strong>Critical</strong> — activate emergency plan.</p>
-                  <p className="text-muted-foreground pt-1"><strong>Days 1–5</strong> are most reliable. <strong>Days 6–16</strong> are indicative trends. <strong>Days 17–90</strong> are seasonal estimates from climate ensemble models — use for planning, not operational decisions.</p>
-                </TooltipContent>
-              </Tooltip>
-            </TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Info className="h-3.5 w-3.5 text-muted-foreground cursor-help" />
+              </TooltipTrigger>
+              <TooltipContent className="max-w-72 text-xs space-y-1">
+                <p className="font-medium">How to read this outlook</p>
+                <p>Each row shows the expected flood situation based on rainfall forecasts and terrain data for Karu LGA.</p>
+                <p><strong>Safe</strong> — normal conditions, no action needed.</p>
+                <p><strong>Monitor</strong> — rainfall building, stay alert.</p>
+                <p><strong>Elevated</strong> — flooding likely, prepare response.</p>
+                <p><strong>Critical</strong> — activate emergency plan.</p>
+                <p className="text-muted-foreground pt-1"><strong>Days 1–5</strong> are most reliable. <strong>Days 6–16</strong> are indicative trends. <strong>Days 17–90</strong> are seasonal estimates from climate ensemble models — use for planning, not operational decisions.</p>
+              </TooltipContent>
+            </Tooltip>
           </div>
           {data && (
             <p className="text-xs text-muted-foreground">

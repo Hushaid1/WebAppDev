@@ -6,10 +6,12 @@ and static parquet files — no database required.
 """
 
 import os
+import json
 import time
 import logging
 import math
 from datetime import date, timedelta
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -385,12 +387,43 @@ def _run_forecast() -> list[dict]:
     return results
 
 
+_FORECAST_DISK_PATH = Path(os.environ.get("MODEL_STORE_PATH", "/app/models_store")) / "forecast_cache.json"
+
+
+def _save_forecast_to_disk(forecasts: list[dict]) -> None:
+    try:
+        _FORECAST_DISK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with open(_FORECAST_DISK_PATH, "w") as f:
+            json.dump({"saved_at": date.today().isoformat(), "forecasts": forecasts}, f)
+    except Exception:
+        pass
+
+
+def _load_forecast_from_disk() -> list[dict]:
+    try:
+        with open(_FORECAST_DISK_PATH) as f:
+            payload = json.load(f)
+        forecasts = payload.get("forecasts", [])
+        if forecasts:
+            logger.warning("Serving stale forecast from disk (live fetch unavailable)")
+        return forecasts
+    except Exception:
+        return []
+
+
 def _get_cached_forecast() -> list[dict]:
     global _forecast_cache, _forecast_cache_ts
     if _forecast_cache is not None and (time.time() - _forecast_cache_ts) < _CACHE_TTL:
         return _forecast_cache
-    _forecast_cache = _run_forecast()
-    _forecast_cache_ts = time.time()
+    fresh = _run_forecast()
+    if fresh:
+        _forecast_cache = fresh
+        _forecast_cache_ts = time.time()
+        _save_forecast_to_disk(fresh)
+    else:
+        # Live fetch failed — serve last known good data from disk
+        _forecast_cache = _load_forecast_from_disk()
+        _forecast_cache_ts = time.time()
     return _forecast_cache
 
 

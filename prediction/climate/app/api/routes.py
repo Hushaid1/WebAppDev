@@ -404,9 +404,25 @@ def _load_forecast_from_disk() -> list[dict]:
         with open(_FORECAST_DISK_PATH) as f:
             payload = json.load(f)
         forecasts = payload.get("forecasts", [])
-        if forecasts:
+        if not forecasts:
+            return []
+        today = date.today()
+        # Filter to future days only and recalculate day_label relative to today
+        refreshed = []
+        for f in forecasts:
+            try:
+                forecast_date = date.fromisoformat(f["date"])
+            except (KeyError, ValueError):
+                continue
+            if forecast_date < today:
+                continue
+            f = dict(f)
+            f["day_label"] = _day_label(forecast_date, today)
+            f["is_forecast"] = forecast_date >= today
+            refreshed.append(f)
+        if refreshed:
             logger.warning("Serving stale forecast from disk (live fetch unavailable)")
-        return forecasts
+        return refreshed
     except Exception:
         return []
 
